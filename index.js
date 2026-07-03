@@ -3,8 +3,6 @@ require("dotenv").config();
 
 const express = require("express");
 const line = require("@line/bot-sdk");
-const { handleAdd } = require("./src/commands/add");
-const { sessions } = require("./src/session");    
 
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -13,49 +11,14 @@ const config = {
 const client = new line.Client(config);
 const app = express();
 
-const handleList = (event) => {
-  // TODO: 一覧取得・返信
-  console.log("一覧", event.source.userId);
-};
-
-const handleDelete = (event) => {
-  // TODO: 削除フロー開始
-  console.log("削除", event.source.userId);
-};
-
-const handleEdit = (event) => {
-  // TODO: 編集フロー開始
-  console.log("編集", event.source.userId);
-};
-
-const commands = {
-  "追加": (event) => handleAdd(event, client),
-  "削除": handleDelete,
-  "編集": handleEdit,
-  "一覧": handleList,
-};
-
 app.post("/webhook", line.middleware(config), (req, res) => {
   const event = req.body.events[0];
-  const text = event.message.text;
-  const userId = event.source.userId;
-  const session = sessions.get(userId);
-
-  if (session) {
-    handleAdd(event, client);
-  } else {
-    const handler = commands[text];
-    if (handler) {
-      handler(event);
-    } else {
-      console.log("コマンドがありません");
-    }
-  }
 
   res.json({ status: "ok" });
 });
 
 const port = process.env.PORT || 3000;
+
 app.listen(port, () => {
   console.log(`Server listening on port ${port}...`);
 });
