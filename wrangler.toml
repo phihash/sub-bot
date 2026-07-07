@@ -1,0 +1,14 @@
+name = "sub-bot"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "SESSION"
+id = "783d4c8a4d684cb0b38aa7b00586ee1e"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "sub-bot-images"
+
+[ai]
+binding = "AI"
