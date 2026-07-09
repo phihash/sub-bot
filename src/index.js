@@ -4,6 +4,7 @@ import { calcNumber, calcPersonalDay, getDescription } from "./numerology.js";
 import { notifySlack } from "./notify.js";
 import { buildFortuneFlex } from "./flex.js";
 import { drawCard } from "./tarot.js";
+import { registerUser } from "./db.js";
 
 export default {
   async fetch(request, env, ctx) {
@@ -61,6 +62,7 @@ export default {
     await Promise.all(
       body.events.map(async (event) => {
         if (event.type === "follow") {
+          await registerUser(env.DB, event.source.userId);
           await notifySlack(
             env.SLACK_WEBHOOK_URL,
             `🟢 友だち追加: ${event.source.userId}`,
