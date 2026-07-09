@@ -1,6 +1,6 @@
 import { verifySignature } from "./verify.js";
 import { isValidBirthday } from "./validate.js";
-import { calcNumber, calcPersonalDay, getDescription } from "./numerology.js";
+import { calcNumber, calcPersonalDay, calcPersonalYear, getDescription } from "./numerology.js";
 import { notifySlack } from "./notify.js";
 import { buildFortuneFlex } from "./flex.js";
 import { drawCard } from "./tarot.js";
@@ -146,8 +146,8 @@ export default {
           };
 
           // メニュー選択 → セッション保存
-        } else if (text === "数秘" || text === "パーソナルイヤー") {
-          await env.SESSION.put(userId, text, { expirationTtl: 300 });
+        } else if (text === "数秘") {
+          await env.SESSION.put(userId, "数秘", { expirationTtl: 300 });
           message = {
             type: "text",
             text: "生年月日を8桁で入力してください（例: 19990421）",
@@ -156,26 +156,19 @@ export default {
           await env.SESSION.put(userId, "タロット", { expirationTtl: 300 });
           message = { type: "text", text: "相談内容を入力してください" };
 
-          // セッションあり → モードに応じた処理
+          // 数秘モード → 一括表示（ライフパス + パーソナルデイ + パーソナルイヤー）
         } else if (mode === "数秘" && isValidBirthday(text)) {
           const num = calcNumber(text, "lifepath");
           const personalDay = calcPersonalDay(text);
+          const personalYear = calcPersonalYear(text);
           const desc = getDescription(num);
           message = [
-            buildFortuneFlex(num, personalDay, desc),
+            buildFortuneFlex(num, personalDay, personalYear, desc),
             {
               type: "text",
-              text: "他の占いも試してみませんか？",
+              text: "タロット占いも試してみませんか？",
               quickReply: {
                 items: [
-                  {
-                    type: "action",
-                    action: {
-                      type: "message",
-                      label: "パーソナルイヤー",
-                      text: "パーソナルイヤー",
-                    },
-                  },
                   {
                     type: "action",
                     action: {
@@ -189,19 +182,9 @@ export default {
             },
           ];
           await env.SESSION.delete(userId);
-        } else if (mode === "パーソナルイヤー" && isValidBirthday(text)) {
-          const year = new Date().getFullYear().toString();
-          const monthDay = text.slice(4, 8);
-          const num = calcNumber(year + monthDay, "personalyear");
-          const desc = getDescription(num);
-          message = {
-            type: "text",
-            text: `${year}年のパーソナルイヤーは【${num}】です\n${desc}`,
-          };
-          await env.SESSION.delete(userId);
 
           // セッションありだが入力が不正
-        } else if (mode === "数秘" || mode === "パーソナルイヤー") {
+        } else if (mode === "数秘") {
           message = {
             type: "text",
             text: "生年月日を8桁で入力してください（例: 19990421）",

@@ -1,4 +1,4 @@
-export function buildFortuneFlex(num, personalDay, description) {
+export function buildFortuneFlex(num, personalDay, personalYear, description) {
   return {
     type: "flex",
     altText: `あなたの秘数は【${num}】です`,
@@ -36,6 +36,14 @@ export function buildFortuneFlex(num, personalDay, description) {
           {
             type: "text",
             text: `パーソナルデー: ${personalDay}`,
+            align: "center",
+            size: "sm",
+            color: "#888888",
+            margin: "sm",
+          },
+          {
+            type: "text",
+            text: `パーソナルイヤー: ${personalYear}`,
             align: "center",
             size: "sm",
             color: "#888888",
