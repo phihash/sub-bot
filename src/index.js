@@ -1,5 +1,4 @@
 import { verifySignature } from "./verify.js";
-import { isValidBirthday } from "./validate.js";
 import { calcNumber, calcPersonalDay, calcPersonalYear, getDescription } from "./numerology.js";
 import { notifySlack } from "./notify.js";
 import { buildFortuneFlex } from "./flex.js";
@@ -91,10 +90,56 @@ export default {
           return;
         }
         if (event.type === "postback") {
-          await notifySlack(
-            env.SLACK_WEBHOOK_URL,
-            `📩 ポストバック: ${event.postback.data}`,
-          );
+          if (event.postback.data === "action=numerology") {
+            const date = event.postback.params.date; // "YYYY-MM-DD"
+            const birthday = date.replace(/-/g, ""); // "YYYYMMDD"
+            const num = calcNumber(birthday, "lifepath");
+            const personalDay = calcPersonalDay(birthday);
+            const personalYear = calcPersonalYear(birthday);
+            const desc = getDescription(num);
+
+            const messages = [
+              buildFortuneFlex(num, personalDay, personalYear, desc),
+              {
+                type: "text",
+                text: "タロット占いも試してみませんか？",
+                quickReply: {
+                  items: [
+                    {
+                      type: "action",
+                      action: {
+                        type: "message",
+                        label: "タロットカード",
+                        text: "タロットカード",
+                      },
+                    },
+                  ],
+                },
+              },
+            ];
+
+            await fetch("https://api.line.me/v2/bot/message/reply", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
+              },
+              body: JSON.stringify({
+                replyToken: event.replyToken,
+                messages,
+              }),
+            });
+
+            await notifySlack(
+              env.SLACK_WEBHOOK_URL,
+              `🤖 数秘送信 → 秘数${num} PD${personalDay} PY${personalYear}`,
+            );
+          } else {
+            await notifySlack(
+              env.SLACK_WEBHOOK_URL,
+              `📩 ポストバック: ${event.postback.data}`,
+            );
+          }
           return;
         }
         if (event.type === "memberJoined") {
@@ -145,50 +190,62 @@ export default {
             text: "テキストメッセージを送ってください",
           };
 
-          // メニュー選択 → セッション保存
+          // メニュー選択
         } else if (text === "数秘") {
-          await env.SESSION.put(userId, "数秘", { expirationTtl: 300 });
           message = {
-            type: "text",
-            text: "生年月日を8桁で入力してください（例: 19990421）",
+            type: "flex",
+            altText: "生年月日を選択してください",
+            contents: {
+              type: "bubble",
+              body: {
+                type: "box",
+                layout: "vertical",
+                contents: [
+                  {
+                    type: "text",
+                    text: "数秘術鑑定",
+                    weight: "bold",
+                    size: "md",
+                    color: "#9B59B6",
+                  },
+                  {
+                    type: "text",
+                    text: "生年月日を選択してください",
+                    size: "sm",
+                    color: "#888888",
+                    margin: "md",
+                  },
+                ],
+                paddingAll: "20px",
+                backgroundColor: "#F8F4FC",
+              },
+              footer: {
+                type: "box",
+                layout: "vertical",
+                contents: [
+                  {
+                    type: "button",
+                    action: {
+                      type: "datetimepicker",
+                      label: "生年月日を選ぶ",
+                      data: "action=numerology",
+                      mode: "date",
+                      initial: "2000-01-01",
+                      max: new Date().toISOString().slice(0, 10),
+                      min: "1920-01-01",
+                    },
+                    style: "primary",
+                    color: "#9B59B6",
+                  },
+                ],
+                paddingAll: "20px",
+                backgroundColor: "#F8F4FC",
+              },
+            },
           };
         } else if (text === "タロットカード") {
           await env.SESSION.put(userId, "タロット", { expirationTtl: 300 });
           message = { type: "text", text: "相談内容を入力してください" };
-
-          // 数秘モード → 一括表示（ライフパス + パーソナルデイ + パーソナルイヤー）
-        } else if (mode === "数秘" && isValidBirthday(text)) {
-          const num = calcNumber(text, "lifepath");
-          const personalDay = calcPersonalDay(text);
-          const personalYear = calcPersonalYear(text);
-          const desc = getDescription(num);
-          message = [
-            buildFortuneFlex(num, personalDay, personalYear, desc),
-            {
-              type: "text",
-              text: "タロット占いも試してみませんか？",
-              quickReply: {
-                items: [
-                  {
-                    type: "action",
-                    action: {
-                      type: "message",
-                      label: "タロットカード",
-                      text: "タロットカード",
-                    },
-                  },
-                ],
-              },
-            },
-          ];
-          await env.SESSION.delete(userId);
-
-          // セッションありだが入力が不正
-        } else if (mode === "数秘") {
-          message = {
-            type: "text",
-            text: "生年月日を8桁で入力してください（例: 19990421）",
-          };
 
           // セッションなし
         } else {
