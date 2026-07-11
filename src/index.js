@@ -1,9 +1,15 @@
 import { verifySignature } from "./verify.js";
-import { calcNumber, calcPersonalDay, calcPersonalYear, getDescription } from "./numerology.js";
+import {
+  calcNumber,
+  calcPersonalDay,
+  calcPersonalYear,
+  getDescription,
+} from "./numerology.js";
 import { notifySlack } from "./notify.js";
 import { buildFortuneFlex } from "./flex.js";
 import { drawCard } from "./tarot.js";
 import { registerUser, softDeleteUser } from "./db.js";
+import { reply, push, showLoading, handleLifecycleEvent } from "./line.js";
 
 export default {
   async fetch(request, env, ctx) {
@@ -26,245 +32,161 @@ export default {
     // リクエストボディをJSONに変換
     const body = JSON.parse(rawBody);
 
-    //ここからがメイン
-    // タロット処理を先にチェック → Queueに投げて即座にResponse返す
     for (const event of body.events) {
-      if (event.type !== "message" || event.message.type !== "text") continue;
+      if (
+        await handleLifecycleEvent(event, {
+          onFollow: async (userId) => {
+            await registerUser(env.DB, userId);
+            await notifySlack(env.SLACK_WEBHOOK_URL, `🟢 友だち追加: ${userId}`);
+          },
+          onUnfollow: async (userId) => {
+            await softDeleteUser(env.DB, userId);
+            await notifySlack(env.SLACK_WEBHOOK_URL, `🔴 ブロック: ${userId}`);
+          },
+        })
+      )
+        continue;
+
+      // postback（数秘のDatetime Picker）
+      if (event.type === "postback") {
+        if (event.postback.data === "action=numerology") {
+          const date = event.postback.params.date;
+          const birthday = date.replace(/-/g, "");
+          const num = calcNumber(birthday, "lifepath");
+          const personalDay = calcPersonalDay(birthday);
+          const personalYear = calcPersonalYear(birthday);
+          const desc = getDescription(num);
+
+          await reply(env, event.replyToken, [
+            buildFortuneFlex(num, personalDay, personalYear, desc),
+            {
+              type: "text",
+              text: "タロット占いも試してみませんか？",
+              quickReply: {
+                items: [
+                  {
+                    type: "action",
+                    action: {
+                      type: "message",
+                      label: "タロットカード",
+                      text: "タロットカード",
+                    },
+                  },
+                ],
+              },
+            },
+          ]);
+
+          await notifySlack(
+            env.SLACK_WEBHOOK_URL,
+            `🤖 数秘送信 → 秘数${num} PD${personalDay} PY${personalYear}`,
+          );
+        }
+        continue;
+      }
+
+      // メッセージ以外はスキップ
+      if (event.type !== "message") continue;
+
       const userId = event.source.userId;
-      const text = event.message.text;
+      const text = event.message.type === "text" ? event.message.text : null;
       const mode = await env.SESSION.get(userId);
 
-      console.log("tarot check, mode:", mode, "text:", text);
+      // テキスト以外
+      if (!text) {
+        await reply(env, event.replyToken, [
+          { type: "text", text: "テキストメッセージを送ってください" },
+        ]);
+        continue;
+      }
+
+      // タロットモード → Queueに投げて即座にResponse返す
       if (mode === "タロット") {
         const card = drawCard();
-        console.log("sending to queue, card:", card.name);
 
-        // ローディングアニメーション表示
-        await fetch("https://api.line.me/v2/bot/chat/loading/start", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
-          },
-          body: JSON.stringify({ chatId: userId, loadingSeconds: 60 }),
-        });
+        await showLoading(env, userId);
 
-        // Queueにタロット処理を投げる
         await env.TAROT_QUEUE.send({ userId, text, card });
         await env.SESSION.delete(userId);
 
         return new Response("OK");
       }
-    }
 
-    // タロット以外の通常処理
-    await Promise.all(
-      body.events.map(async (event) => {
-        if (event.type === "follow") {
-          await registerUser(env.DB, event.source.userId);
-          await notifySlack(
-            env.SLACK_WEBHOOK_URL,
-            `🟢 友だち追加: ${event.source.userId}`,
-          );
-          return;
-        }
-        if (event.type === "unfollow") {
-          await softDeleteUser(env.DB, event.source.userId);
-          await notifySlack(
-            env.SLACK_WEBHOOK_URL,
-            `🔴 ブロック: ${event.source.userId}`,
-          );
-          return;
-        }
-        if (event.type === "postback") {
-          if (event.postback.data === "action=numerology") {
-            const date = event.postback.params.date; // "YYYY-MM-DD"
-            const birthday = date.replace(/-/g, ""); // "YYYYMMDD"
-            const num = calcNumber(birthday, "lifepath");
-            const personalDay = calcPersonalDay(birthday);
-            const personalYear = calcPersonalYear(birthday);
-            const desc = getDescription(num);
-
-            const messages = [
-              buildFortuneFlex(num, personalDay, personalYear, desc),
-              {
-                type: "text",
-                text: "タロット占いも試してみませんか？",
-                quickReply: {
-                  items: [
-                    {
-                      type: "action",
-                      action: {
-                        type: "message",
-                        label: "タロットカード",
-                        text: "タロットカード",
-                      },
-                    },
-                  ],
+      // メニュー選択
+      let message;
+      if (text === "数秘") {
+        message = {
+          type: "flex",
+          altText: "生年月日を選択してください",
+          contents: {
+            type: "bubble",
+            body: {
+              type: "box",
+              layout: "vertical",
+              contents: [
+                {
+                  type: "text",
+                  text: "数秘術鑑定",
+                  weight: "bold",
+                  size: "md",
+                  color: "#9B59B6",
                 },
-              },
-            ];
-
-            await fetch("https://api.line.me/v2/bot/message/reply", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
-              },
-              body: JSON.stringify({
-                replyToken: event.replyToken,
-                messages,
-              }),
-            });
-
-            await notifySlack(
-              env.SLACK_WEBHOOK_URL,
-              `🤖 数秘送信 → 秘数${num} PD${personalDay} PY${personalYear}`,
-            );
-          } else {
-            await notifySlack(
-              env.SLACK_WEBHOOK_URL,
-              `📩 ポストバック: ${event.postback.data}`,
-            );
-          }
-          return;
-        }
-        if (event.type === "memberJoined") {
-          await notifySlack(
-            env.SLACK_WEBHOOK_URL,
-            "👋 メンバーがグループに参加",
-          );
-          return;
-        }
-        if (event.type === "memberLeft") {
-          await notifySlack(
-            env.SLACK_WEBHOOK_URL,
-            "👋 メンバーがグループから退出",
-          );
-          return;
-        }
-        if (event.type !== "message") return;
-
-        const time = new Date(event.timestamp).toLocaleString("ja-JP", {
-          timeZone: "Asia/Tokyo",
-        });
-        const userText =
-          event.message.type === "text"
-            ? event.message.text
-            : `[${event.message.type}]`;
-
-        await notifySlack(
-          env.SLACK_WEBHOOK_URL,
-          [
-            `💬 受信`,
-            `ユーザー: ${event.source.userId}`,
-            `メッセージ: ${userText}`,
-            `メッセージID: ${event.message.id}`,
-            `イベントID: ${event.webhookEventId}`,
-            `日時: ${time}`,
-          ].join("\n"),
-        );
-
-        const userId = event.source.userId;
-        const text = event.message.type === "text" ? event.message.text : null;
-
-        const mode = await env.SESSION.get(userId);
-        let message;
-
-        if (!text) {
-          message = {
-            type: "text",
-            text: "テキストメッセージを送ってください",
-          };
-
-          // メニュー選択
-        } else if (text === "数秘") {
-          message = {
-            type: "flex",
-            altText: "生年月日を選択してください",
-            contents: {
-              type: "bubble",
-              body: {
-                type: "box",
-                layout: "vertical",
-                contents: [
-                  {
-                    type: "text",
-                    text: "数秘術鑑定",
-                    weight: "bold",
-                    size: "md",
-                    color: "#9B59B6",
-                  },
-                  {
-                    type: "text",
-                    text: "生年月日を選択してください",
-                    size: "sm",
-                    color: "#888888",
-                    margin: "md",
-                  },
-                ],
-                paddingAll: "20px",
-                backgroundColor: "#F8F4FC",
-              },
-              footer: {
-                type: "box",
-                layout: "vertical",
-                contents: [
-                  {
-                    type: "button",
-                    action: {
-                      type: "datetimepicker",
-                      label: "生年月日を選ぶ",
-                      data: "action=numerology",
-                      mode: "date",
-                      initial: "2000-01-01",
-                      max: new Date().toISOString().slice(0, 10),
-                      min: "1920-01-01",
-                    },
-                    style: "primary",
-                    color: "#9B59B6",
-                  },
-                ],
-                paddingAll: "20px",
-                backgroundColor: "#F8F4FC",
-              },
+                {
+                  type: "text",
+                  text: "生年月日を選択してください",
+                  size: "sm",
+                  color: "#888888",
+                  margin: "md",
+                },
+              ],
+              paddingAll: "20px",
+              backgroundColor: "#F8F4FC",
             },
-          };
-        } else if (text === "タロットカード") {
-          await env.SESSION.put(userId, "タロット", { expirationTtl: 300 });
-          message = { type: "text", text: "相談内容を入力してください" };
-
-          // セッションなし
-        } else {
-          message = { type: "text", text: "メニューを選んでください" };
-        }
-
-        const messages = Array.isArray(message) ? message : [message];
-
-        await fetch("https://api.line.me/v2/bot/message/reply", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
+            footer: {
+              type: "box",
+              layout: "vertical",
+              contents: [
+                {
+                  type: "button",
+                  action: {
+                    type: "datetimepicker",
+                    label: "生年月日を選ぶ",
+                    data: "action=numerology",
+                    mode: "date",
+                    initial: "2000-01-01",
+                    max: new Date().toISOString().slice(0, 10),
+                    min: "1920-01-01",
+                  },
+                  style: "primary",
+                  color: "#9B59B6",
+                },
+              ],
+              paddingAll: "20px",
+              backgroundColor: "#F8F4FC",
+            },
           },
-          body: JSON.stringify({
-            replyToken: event.replyToken,
-            messages,
-          }),
-        });
+        };
+      } else if (text === "タロットカード") {
+        await env.SESSION.put(userId, "タロット", { expirationTtl: 300 });
+        message = { type: "text", text: "相談内容を入力してください" };
+      } else {
+        message = { type: "text", text: "メニューを選んでください" };
+      }
 
-        const logText = messages
-          .map((m) =>
-            m.type === "flex"
-              ? m.altText
-              : m.type === "image"
-                ? m.originalContentUrl
-                : m.text,
-          )
-          .join(" | ");
-        await notifySlack(env.SLACK_WEBHOOK_URL, `🤖 送信 → ${logText}`);
-      }),
-    );
+      const messages = Array.isArray(message) ? message : [message];
+      await reply(env, event.replyToken, messages);
+
+      const logText = messages
+        .map((m) =>
+          m.type === "flex"
+            ? m.altText
+            : m.type === "image"
+              ? m.originalContentUrl
+              : m.text,
+        )
+        .join(" | ");
+      await notifySlack(env.SLACK_WEBHOOK_URL, `🤖 送信 → ${logText}`);
+    }
 
     return new Response("OK");
   },
@@ -306,45 +228,25 @@ export default {
       }
 
       if (!aiText) {
-        await fetch("https://api.line.me/v2/bot/message/push", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
+        await push(env, userId, [
+          {
+            type: "text",
+            text: "申し訳ありません、鑑定に失敗しました。もう一度お試しください。",
           },
-          body: JSON.stringify({
-            to: userId,
-            messages: [
-              {
-                type: "text",
-                text: "申し訳ありません、鑑定に失敗しました。もう一度お試しください。",
-              },
-            ],
-          }),
-        });
+        ]);
         await notifySlack(env.SLACK_WEBHOOK_URL, `❌ AI失敗`);
         msg.ack();
         continue;
       }
 
-      const pushRes = await fetch("https://api.line.me/v2/bot/message/push", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`,
+      const pushRes = await push(env, userId, [
+        {
+          type: "image",
+          originalContentUrl: card.imageUrl,
+          previewImageUrl: card.imageUrl,
         },
-        body: JSON.stringify({
-          to: userId,
-          messages: [
-            {
-              type: "image",
-              originalContentUrl: card.imageUrl,
-              previewImageUrl: card.imageUrl,
-            },
-            { type: "text", text: `${card.name}\n\n${aiText}` },
-          ],
-        }),
-      });
+        { type: "text", text: `${card.name}\n\n${aiText}` },
+      ]);
 
       if (!pushRes.ok) {
         const errBody = await pushRes.text();
