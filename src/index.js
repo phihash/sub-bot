@@ -3,7 +3,7 @@ import { calcNumber, calcPersonalDay, calcPersonalYear, getDescription } from ".
 import { notifySlack } from "./notify.js";
 import { buildFortuneFlex } from "./flex.js";
 import { drawCard } from "./tarot.js";
-import { registerUser } from "./db.js";
+import { registerUser, softDeleteUser } from "./db.js";
 
 export default {
   async fetch(request, env, ctx) {
@@ -69,23 +69,10 @@ export default {
           return;
         }
         if (event.type === "unfollow") {
+          await softDeleteUser(env.DB, event.source.userId);
           await notifySlack(
             env.SLACK_WEBHOOK_URL,
             `🔴 ブロック: ${event.source.userId}`,
-          );
-          return;
-        }
-        if (event.type === "join") {
-          await notifySlack(
-            env.SLACK_WEBHOOK_URL,
-            `📥 グループに参加: ${event.source.groupId}`,
-          );
-          return;
-        }
-        if (event.type === "leave") {
-          await notifySlack(
-            env.SLACK_WEBHOOK_URL,
-            `📤 グループから退出: ${event.source.groupId}`,
           );
           return;
         }
